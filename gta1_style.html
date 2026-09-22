@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>GTA 1 Style Browser Game</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #1a1a1a; font-family: 'Courier New', monospace; }
+        canvas { display: block; image-rendering: pixelated; }
+        #ui {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: #fff;
+            font-size: 24px;
+            font-weight: bold;
+            text-shadow: 2px 2px 0 #000;
+            pointer-events: none;
+        }
+        #wanted {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            color: #ff0;
+            font-size: 30px;
+            font-weight: bold;
+            text-shadow: 2px 2px 0 #000;
+            pointer-events: none;
+        }
+        #controls {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            color: #aaa;
+            font-size: 14px;
+            background: rgba(0,0,0,0.7);
+            padding: 10px;
+            border-radius: 5px;
+            pointer-events: none;
+        }
+        #message {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #f00;
+            font-size: 48px;
+            font-weight: bold;
+            text-shadow: 3px 3px 0 #000;
+            display: none;
+            pointer-events: none;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div id="ui">SCORE: <span id="score">0</span></div>
+    <div id="wanted">WANTED: <span id="stars">☆☆☆☆☆</span></div>
+    <div id="controls">
+        WASD / Стрелки - Движение<br>
+        F - Сесть/Выйти из машины<br>
+        SPACE - Тормоз/Действие<br>
+        Убивай пешеходов, угоняй тачки, избегай полицию!
+    </div>
+    <div id="message">WASTED</div>
+    <canvas id="game"></canvas>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+// Настройки экрана
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+
+// Константы игры в стиле GTA 1
+const TILE_SIZE = 64;
+const MAP_WIDTH = 100;
+const MAP_HEIGHT = 100;
+const PLAYER_SPEED = 4;
+const CAR_SPEED = 8;
+const CAR_ACCELERATION = 0.2;
+const CAR_FRICTION = 0.96;
+const CAR_TURN_SPEED = 0.06;
+
+// Типы тайлов
+const TILE_GRASS = 0;
+const TILE_ROAD_H = 1;
+const TILE_ROAD_V = 2;
+const TILE_ROAD_CROSS = 3;
+const TILE_BUILDING = 4;
+const TILE_SIDEWALK = 5;
+
+// Генерация карты (городская сетка)
+const map = [];
+const buildings = [];
+const roads = [];
+
+function generateMap() {
+    for (let y = 0; y < MAP_HEIGHT; y++) {
+        map[y] = [];
+        for (let x = 0; x < MAP_WIDTH; x++) {
+            // Создаем сетку дорог каждые 8-12 блоков
+            const isRoadX = x % 10 === 0 || x % 10 === 1;
+            const isRoadY = y % 10 === 0 || y % 10 === 1;
+            
+            if (isRoadX && isRoadY) {
+                map[y][x] = TILE_ROAD_CROSS;
+                roads.push({x, y});
+            } else if (isRoadX) {
+                map[y][x] = TILE_ROAD_V;
+                roads.push({x, y});
+            } else if (isRoadY) {
+                map[y][x] = TILE_ROAD_H;
+                roads.push({x, y});
+            } else if (x > 0 && x < MAP_WIDTH-1 && y > 0 && y < MAP_HEIGHT-1) {
+                // Здания или тротуары
+                if (Math.random() > 0.3) {
+                    map[y][x] = TILE_BUILDING;
+                    buildings.push({x, y, w: 1, h: 1});
+                } else {
+                    map[y][x] = TILE_SIDEWALK;
+                }
+            } else {
+                map[y][x] = TILE_GRASS;
+            }
+        }
+    }
+}
+
+generateMap();
+
+// Игрок
+const player = {
+    x: MAP_WIDTH * TILE_SIZE / 2,
+    y: MAP_HEIGHT * TILE_SIZE / 2,
+    angle: 0,
+    inCar: false,
+    car: null,
+    wantedLevel: 0,
+    score: 0,
+    dead: false,
+    color: '#ffcc00'
+};
+
+// Машины
+const cars = [];
+const carColors = ['#ff0000', '#00ff00', '#0000ff', '#ffff00', '#ff00ff', '#00ffff', '#ffffff', '#888888'];
+
+function spawnCars() {
+    for (let i = 0; i < 60; i++) {
+        const road = roads[Math.floor(Math.random() * roads.length)];
+        cars.push({
+            x: road.x * TILE_SIZE + TILE_SIZE/2,
+            y: road.y * TILE_SIZE + TILE_SIZE/2,
+            angle: Math.random() > 0.5 ? 0 : Math.PI/2,
+            speed: 0,
+            color: carColors[Math.floor(Math.random() * carColors.length)],
+            type: Math.floor(Math.random() * 3),
+            driver: null
+        });
+    }
+}
+
+spawnCars();
+
+// Пешеходы
+const pedestrians = [];
+
+function spawnPedestrians() {
+    for (let i = 0; i < 100; i++) {
+        let x, y;
+        do {
+            x = Math.floor(Math.random() * MAP_WIDTH);
+            y = Math.floor(Math.random() * MAP_HEIGHT);
+        } while (map[y][x] === TILE_BUILDING);
+        
+        pedestrians.push({
+            x: x * TILE_SIZE + TILE_SIZE/2,
+            y: y * TILE_SIZE + TILE_SIZE/2,
+            angle: Math.random() * Math.PI * 2,
+            speed: 0.5 + Math.random() * 0.5,
+            changeDirTimer: 0,
+            alive: true,
+            color: `hsl(${Math.random() * 360}, 70%, 50%)`
+        });
+    }
+}
+
+spawnPedestrians();
+
+// Полиция
+const police = [];
+
+function spawnPolice() {
+    for (let i = 0; i < 5; i++) {
+        const road = roads[Math.floor(Math.random() * roads.length)];
+        police.push({
+            x: road.x * TILE_SIZE + TILE_SIZE/2,
+            y: road.y * TILE_SIZE + TILE_SIZE/2,
+            angle: Math.random() > 0.5 ? 0 : Math.PI/2,
+            speed: 0,
+            color: '#0000ff',
+            active: false
+        });
+    }
+}
+
+spawnPolice();
+
+// Управление
+const keys = {};
+window.addEventListener('keydown', e => {
+    keys[e.code] = true;
+    if (e.code === 'KeyF') toggleCar();
+    if (e.code === 'Space' && player.dead) resetGame();
+});
+window.addEventListener('keyup', e => keys[e.code] = false);
+
+function toggleCar() {
+    if (player.inCar) {
+        // Выход из машины
+        player.inCar = false;
+        player.x = player.car.x + Math.cos(player.car.angle + Math.PI/2) * 40;
+        player.y = player.car.y + Math.sin(player.car.angle + Math.PI/2) * 40;
+        player.car.driver = null;
+        player.car = null;
+    } else {
+        // Поиск ближайшей машины
+        let nearestCar = null;
+        let minDist = 60;
+        
+        for (const car of cars) {
+            const dist = Math.hypot(car.x - player.x, car.y - player.y);
+            if (dist < minDist) {
+                nearestCar = car;
+                minDist = dist;
+            }
+        }
+        
+        if (nearestCar) {
+            player.inCar = true;
+            player.car = nearestCar;
+            nearestCar.driver = player;
+            player.wantedLevel = Math.min(5, player.wantedLevel + 1);
+            updateWantedStars();
+        }
+    }
+}
+
+function updateWantedStars() {
+    const starsEl = document.getElementById('stars');
+    starsEl.textContent = '★'.repeat(player.wantedLevel) + '☆'.repeat(5 - player.wantedLevel);
+}
+
+function resetGame() {
+    player.dead = false;
+    player.wantedLevel = 0;
+    player.score = 0;
+    player.x = MAP_WIDTH * TILE_SIZE / 2;
+    player.y = MAP_HEIGHT * TILE_SIZE / 2;
+    player.inCar = false;
+    player.car = null;
+    
+    document.getElementById('message').style.display = 'none';
+    document.getElementById('score').textContent = '0';
+    updateWantedStars();
+    
+    // Респаун пешеходов
+    pedestrians.forEach(p => p.alive = true);
+}
+
+// Камера
+const camera = { x: 0, y: 0 };
+
+function updateCamera() {
+    let targetX, targetY;
+    
+    if (player.inCar && player.car) {
+        targetX = player.car.x;
+        targetY = player.car.y;
+    } else {
+        targetX = player.x;
+        targetY = player.y;
+    }
+    
+    camera.x += (targetX - canvas.width/2 - camera.x) * 0.1;
+    camera.y += (targetY - canvas.height/2 - camera.y) * 0.1;
+    
+    // Ограничение камеры границами карты
+    camera.x = Math.max(0, Math.min(camera.x, MAP_WIDTH * TILE_SIZE - canvas.width));
+    camera.y = Math.max(0, Math.min(camera.y, MAP_HEIGHT * TILE_SIZE - canvas.height));
+}
+
+// Физика и логика
+function updatePlayer() {
+    if (player.dead) return;
+    
+    if (player.inCar && player.car) {
+        const car = player.car;
+        
+        if (keys['KeyW'] || keys['ArrowUp']) {
+            car.speed += CAR_ACCELERATION;
+        } else if (keys['KeyS'] || keys['ArrowDown']) {
+            car.speed -= CAR_ACCELERATION;
+        } else {
+            car.speed *= CAR_FRICTION;
+        }
+        
+        if (keys['Space']) {
+            car.speed *= 0.9;
+        }
+        
+        car.speed = Math.max(-CAR_SPEED/2, Math.min(CAR_SPEED, car.speed));
+        
+        if (Math.abs(car.speed) > 0.1) {
+            if (keys['KeyA'] || keys['ArrowLeft']) {
+                car.angle -= CAR_TURN_SPEED * Math.sign(car.speed);
+            }
+            if (keys['KeyD'] || keys['ArrowRight']) {
+                car.angle += CAR_TURN_SPEED * Math.sign(car.speed);
+            }
+        }
+        
+        const newX = car.x + Math.cos(car.angle) * car.speed;
+        const newY = car.y + Math.sin(car.angle) * car.speed;
+        
+        // Проверка столкновений со зданиями
+        const tileX = Math.floor(newX / TILE_SIZE);
+        const tileY = Math.floor(newY / TILE_SIZE);
+        
+        if (tileX >= 0 && tileX < MAP_WIDTH && tileY >= 0 && tileY < MAP_HEIGHT) {
+            if (map[tileY][tileX] !== TILE_BUILDING) {
+                car.x = newX;
+                car.y = newY;
+            } else {
+                car.speed *= -0.5;
+            }
+        }
+        
+        player.x = car.x;
+        player.y = car.y;
+        
+    } else {
+        let dx = 0, dy = 0;
+        
+        if (keys['KeyW'] || keys['ArrowUp']) dy = -PLAYER_SPEED;
+        if (keys['KeyS'] || keys['ArrowDown']) dy = PLAYER_SPEED;
+        if (keys['KeyA'] || keys['ArrowLeft']) dx = -PLAYER_SPEED;
+        if (keys['KeyD'] || keys['ArrowRight']) dx = PLAYER_SPEED;
+        
+        if (dx !== 0 || dy !== 0) {
+            player.angle = Math.atan2(dy, dx);
+        }
+        
+        const newX = player.x + dx;
+        const newY = player.y + dy;
+        
+        const tileX = Math.floor(newX / TILE_SIZE);
+        const tileY = Math.floor(newY / TILE_SIZE);
+        
+        if (tileX >= 0 && tileX < MAP_WIDTH && tileY >= 0 && tileY < MAP_HEIGHT) {
+            if (map[tileY][tileX] !== TILE_BUILDING) {
+                player.x = newX;
+                player.y = newY;
+            }
+        }
+    }
+}
+
+function updatePedestrians() {
+    for (const ped of pedestrians) {
+        if (!ped.alive) continue;
+        
+        ped.changeDirTimer--;
+        if (ped.changeDirTimer <= 0) {
+            ped.angle = Math.random() * Math.PI * 2;
+            ped.changeDirTimer = 60 + Math.random() * 120;
+        }
+        
+        const newX = ped.x + Math.cos(ped.angle) * ped.speed;
+        const newY = ped.y + Math.sin(ped.angle) * ped.speed;
+        
+        const tileX = Math.floor(newX / TILE_SIZE);
+        const tileY = Math.floor(newY / TILE_SIZE);
+        
+        if (tileX >= 0 && tileX < MAP_WIDTH && tileY >= 0 && tileY < MAP_HEIGHT) {
+            if (map[tileY][tileX] !== TILE_BUILDING) {
+                ped.x = newX;
+                ped.y = newY;
+            } else {
+                ped.angle += Math.PI;
+            }
+        }
+        
+        // Столкновение с игроком в машине
+        if (player.inCar && player.car) {
+            const dist = Math.hypot(player.car.x - ped.x, player.car.y - ped.y);
+            if (dist < 30 && Math.abs(player.car.speed) > 2) {
+                ped.alive = false;
+                player.score += 100;
+                player.wantedLevel = Math.min(5, player.wantedLevel + 1);
+                updateWantedStars();
+                document.getElementById('score').textContent = player.score;
+            }
+        }
+        
+        // Столкновение с игроком пешком
+        if (!player.inCar) {
+            const dist = Math.hypot(player.x - ped.x, player.y - ped.y);
+            if (dist < 20) {
+                // Отталкивание
+                const angle = Math.atan2(ped.y - player.y, ped.x - player.x);
+                ped.x += Math.cos(angle) * 5;
+                ped.y += Math.sin(angle) * 5;
+            }
+        }
+    }
+}
+
+function updatePolice() {
+    if (player.wantedLevel === 0) {
+        police.forEach(p => p.active = false);
+        return;
+    }
+    
+    const activePoliceCount = player.wantedLevel;
+    
+    for (let i = 0; i < police.length; i++) {
+        const cop = police[i];
+        cop.active = i < activePoliceCount;
+        
+        if (!cop.active) continue;
+        
+        // Простое преследование
+        const angleToPlayer = Math.atan2(player.y - cop.y, player.x - cop.x);
+        const distToPlayer = Math.hypot(player.x - cop.x, player.y - cop.y);
+        
+        if (distToPlayer > 100) {
+            cop.angle = angleToPlayer;
+            cop.speed = Math.min(CAR_SPEED * 0.7, cop.speed + 0.1);
+        } else {
+            cop.speed *= 0.9;
+        }
+        
+        cop.x += Math.cos(cop.angle) * cop.speed;
+        cop.y += Math.sin(cop.angle) * cop.speed;
+        
+        // Столкновение с игроком
+        if (distToPlayer < 30) {
+            player.dead = true;
+            document.getElementById('message').style.display = 'block';
+        }
+    }
+}
+
+// Отрисовка
+function draw() {
+    // Очистка
+    ctx.fillStyle = '#1a1a1a';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    
+    ctx.save();
+    ctx.translate(-camera.x, -camera.y);
+    
+    // Отрисовка карты
+    const startTileX = Math.floor(camera.x / TILE_SIZE);
+    const startTileY = Math.floor(camera.y / TILE_SIZE);
+    const endTileX = startTileX + Math.ceil(canvas.width / TILE_SIZE) + 1;
+    const endTileY = startTileY + Math.ceil(canvas.height / TILE_SIZE) + 1;
+    
+    for (let y = startTileY; y < endTileY; y++) {
+        for (let x = startTileX; x < endTileX; x++) {
+            if (y < 0 || y >= MAP_HEIGHT || x < 0 || x >= MAP_WIDTH) continue;
+            
+            const tile = map[y][x];
+            const posX = x * TILE_SIZE;
+            const posY = y * TILE_SIZE;
+            
+            switch(tile) {
+                case TILE_GRASS:
+                    ctx.fillStyle = '#2d5a27';
+                    ctx.fillRect(posX, posY, TILE_SIZE, TILE_SIZE);
+                    break;
+                case TILE_ROAD_H:
+                case TILE_ROAD_V:
+                case TILE_ROAD_CROSS:
+                    ctx.fillStyle = '#333333';
+                    ctx.fillRect(posX, posY, TILE_SIZE, TILE_SIZE);
+                    // Разметка
+                    ctx.fillStyle = '#ffffff';
+                    if (tile === TILE_ROAD_V) {
+                        ctx.fillRect(posX + TILE_SIZE/2 - 2, posY, 4, TILE_SIZE);
+                    } else if (tile === TILE_ROAD_H) {
+                        ctx.fillRect(posX, posY + TILE_SIZE/2 - 2, TILE_SIZE, 4);
+                    }
+                    break;
+                case TILE_BUILDING:
+                    ctx.fillStyle = '#555555';
+                    ctx.fillRect(posX, posY, TILE_SIZE, TILE_SIZE);
+                    // Крыша здания
+                    ctx.fillStyle = '#444444';
+                    ctx.fillRect(posX + 4, posY + 4, TILE_SIZE - 8, TILE_SIZE - 8);
+                    break;
+                case TILE_SIDEWALK:
+                    ctx.fillStyle = '#666666';
+                    ctx.fillRect(posX, posY, TILE_SIZE, TILE_SIZE);
+                    break;
+            }
+        }
+    }
+    
+    // Отрисовка пешеходов
+    for (const ped of pedestrians) {
+        if (!ped.alive) {
+            // Мертвый пешеход
+            ctx.fillStyle = '#8b0000';
+            ctx.beginPath();
+            ctx.arc(ped.x, ped.y, 8, 0, Math.PI * 2);
+            ctx.fill();
+            continue;
+        }
+        
+        ctx.save();
+        ctx.translate(ped.x, ped.y);
+        ctx.rotate(ped.angle);
+        
+        // Тело
+        ctx.fillStyle = ped.color;
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 12, 6, 0, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Голова
+        ctx.fillStyle = '#ffccaa';
+        ctx.beginPath();
+        ctx.arc(8, 0, 5, 0, Math.PI * 2);
+        ctx.fill();
+        
+        ctx.restore();
+    }
+    
+    // Отрисовка машин
+    for (const car of cars) {
+        ctx.save();
+        ctx.translate(car.x, car.y);
+        ctx.rotate(car.angle);
+        
+        // Кузов
+        ctx.fillStyle = car.color;
+        ctx.fillRect(-20, -10, 40, 20);
+        
+        // Крыша/стекла
+        ctx.fillStyle = '#333333';
+        ctx.fillRect(-10, -8, 20, 16);
+        
+        // Фары
+        ctx.fillStyle = '#ffff00';
+        ctx.fillRect(18, -8, 2, 4);
+        ctx.fillRect(18, 4, 2, 4);
+        
+        // Задние фары
+        ctx.fillStyle = '#ff0000';
+        ctx.fillRect(-20, -8, 2, 4);
+        ctx.fillRect(-20, 4, 2, 4);
+        
+        ctx.restore();
+    }
+    
+    // Отрисовка игрока
+    if (!player.dead) {
+        if (player.inCar) {
+            // Игрок в машине не рисуется отдельно
+        } else {
+            ctx.save();
+            ctx.translate(player.x, player.y);
+            ctx.rotate(player.angle);
+            
+            // Тело
+            ctx.fillStyle = player.color;
+            ctx.beginPath();
+            ctx.ellipse(0, 0, 14, 7, 0, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Голова
+            ctx.fillStyle = '#ffccaa';
+            ctx.beginPath();
+            ctx.arc(10, 0, 6, 0, Math.PI * 2);
+            ctx.fill();
+            
+            ctx.restore();
+        }
+    }
+    
+    ctx.restore();
+}
+
+// Игровой цикл
+function gameLoop() {
+    updatePlayer();
+    updatePedestrians();
+    updatePolice();
+    updateCamera();
+    draw();
+    requestAnimationFrame(gameLoop);
+}
+
+// Запуск
+gameLoop();
+
+// Обработка изменения размера окна
+window.addEventListener('resize', () => {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+});
+
+</script>
+</body>
+</html>
